@@ -56,3 +56,5 @@ docker-compose.override.yml
 # =========================
 # Custom Exclusions
 # =========================
+db/*
+!db/.gitkeep

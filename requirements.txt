@@ -1,1 +1,2 @@
+loguru
 streamlit==1.44.1
