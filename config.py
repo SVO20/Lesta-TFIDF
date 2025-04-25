@@ -6,3 +6,4 @@ DB_DIR = os.path.join(ROOT_DIR, "db")
 DB_NAME = "project.db"
 DB_PATH = os.path.join("db", DB_NAME)
 DB_URL = f"sqlite:///{DB_PATH}"
+STOP_WORDS_PATH = "spacy_large_stopwords_ru.txt"
