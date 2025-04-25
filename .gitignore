@@ -1,0 +1,58 @@
+# =========================
+# General Ignored Files
+# =========================
+
+# Ignore log files
+*.log
+logs/
+
+# Ignore temporary and backup files
+*.tmp
+*.bak
+*.swo
+*.swp
+
+# Ignore Python bytecode and cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# =========================
+# Development & Dependency Files
+# =========================
+
+# Ignore virtual environments
+venv/
+env/
+
+# Ignore dependency manager files
+Pipfile
+Pipfile.lock
+poetry.lock
+
+# Ignore IDE/editor configuration files
+.vscode/
+.idea/
+
+# Ignore system-specific files
+.DS_Store
+Thumbs.db
+
+# =========================
+# Docker & Deployment
+# =========================
+
+# Ignore Docker overrides and local configurations
+docker-compose.override.yml
+
+# Ignore hidden files and directories (except specific ones)
+.*
+.*/
+!.gitignore
+!.dockerignore
+!.env.example
+
+# =========================
+# Custom Exclusions
+# =========================
