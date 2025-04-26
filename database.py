@@ -38,7 +38,7 @@ documents_lemmas = Table("documents_lemmas", metadata,
                          Column("doc_id", Integer, ForeignKey("documents.doc_id", ondelete="CASCADE"), primary_key=True),
                          Column("lemma_id", Integer, ForeignKey("lemmas.lemma_id", ondelete="CASCADE"), primary_key=True),
                          Column("lemma_count", Integer, nullable=False),
-                         Column("lemma_tf", Float, nullable=False)) # Float is equivalent to FLOAT UNSIGNED, both 4 bytes
+                         Column("lemma_tf", Float, nullable=False))  # Float is equivalent to FLOAT UNSIGNED, both 4 bytes
 
 
 # =====================================================
@@ -48,6 +48,7 @@ class Corpus:
     Interface for the SQLite-powered text corpus using SQLAlchemy Core as DSL.
 
     """
+
     def __init__(self, engine: Engine):
         self.engine = engine
         self.Session = sessionmaker(bind=self.engine, future=True)  # Session factory
@@ -65,16 +66,16 @@ class Corpus:
                                       .values(xxhash64=nlp.xxhash64,
                                               compressed_text=nlp.compressed_text)
                                       .returning(documents.c.doc_id))
-                doc_id = res.scalar_one() # Get primary key of last added entry (first autoincremented doc_id)
+                doc_id = res.scalar_one()  # Get primary key of last added entry (first autoincremented doc_id)
 
                 # 2) Upsert lemmas to `lemmas`
                 unique_lemmas = set(nlp.lemmas_count_map.keys())
                 for lemma in unique_lemmas:
                     session.execute(insert(lemmas).prefix_with("OR IGNORE").values(lemma=lemma))
-                    
+
                 # 3) Fetch lemma IDs
                 rows = session.execute(select(lemmas.c.lemma_id, lemmas.c.lemma)
-                                       .where(lemmas.c.lemma.in_(unique_lemmas))) # each row is (lemma_id, lemma)
+                                       .where(lemmas.c.lemma.in_(unique_lemmas)))  # each row is (lemma_id, lemma)
                 lemmas_map = {row.lemma: row.lemma_id for row in rows}
 
                 # 4) Fill associations table `documents_lemmas`
@@ -105,7 +106,7 @@ class Corpus:
             rows = session.execute(select(documents.c.doc_id, documents.c.xxhash64)).all()
             return {row.xxhash64: row.doc_id for row in rows} if rows else {}
 
-    def lemmas_id_idf_map(self):
+    def lemmas_id_doccount_map(self):
         with (self.Session() as session):
             with session.begin():
                 # Group by `lemma_id` -> arrgegate by count uinique `doc_id`s
@@ -153,15 +154,59 @@ class Corpus:
                 if not tf_map:
                     return {}
 
-                lemid_idf_map = self.lemmas_id_idf_map()
+                lemid_doccount_map = self.lemmas_id_doccount_map()
 
                 tf_idf_result = {}
                 for lemma_id, tf in tf_map.items():
-                    idf = lemid_idf_map.get(lemma_id)
-                    if idf is None or idf == 0:
+                    doccount = lemid_doccount_map.get(lemma_id)
+                    if doccount is None or doccount == 0:
                         continue
-    
-                    idf = math.log(total_docs / idf)
+
+                    idf = math.log(total_docs / doccount)
                     tf_idf_result[lemma_id] = tf * idf
 
                 return tf_idf_result
+
+    def document_lemmas_info(self, doc_id: int) -> list[dict]:
+        """
+        Return list of lemmas for the document, each as:
+        {'lemma': str, 'count': int, 'tf': float, 'idf': float, 'tf-idf': float}
+        Sorted descending by 'tf-idf'.
+        """
+        with self.Session() as session:
+            with session.begin():
+                # Total documents
+                total_docs = session.execute(select(func.count()).select_from(documents)).scalar_one()
+                if total_docs == 0:
+                    return []
+
+                # Load known info
+                tf_map = self.lemmas_tf(doc_id)
+                count_map = self.lemmas_count(doc_id)
+                tfidf_map = self.lemma_tfidf_map(doc_id)
+                lemid_doccount_map = self.lemmas_id_doccount_map()
+
+                # Resolve lemma_id -> lemma
+                lemma_ids = list(count_map.keys())
+                rows = session.execute(select(lemmas.c.lemma_id, lemmas.c.lemma)
+                                       .where(lemmas.c.lemma_id.in_(lemma_ids))).fetchall()
+                id_to_lemma = {row.lemma_id: row.lemma for row in rows}
+
+                # Compose full list
+                data = []
+                for lemma_id in lemma_ids:
+                    lemma = id_to_lemma.get(lemma_id, f"[id={lemma_id}]")
+                    count = count_map.get(lemma_id, 0)
+                    tf = tf_map.get(lemma_id, 0.0)
+                    docs_count = lemid_doccount_map.get(lemma_id, 1)
+                    idf = math.log(total_docs / docs_count) if docs_count else 0.0  # idf of lemma in Corpus
+                    tfidf = tfidf_map.get(lemma_id, 0.0)
+
+                    data.append({"word": lemma,
+                                 "count": count,
+                                 "tf": tf,
+                                 "idf": idf,
+                                 "tf-idf": tfidf})
+
+                # Sort by tf-idf descending
+                return sorted(data, key=lambda x: x["tf-idf"], reverse=True)

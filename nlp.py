@@ -45,6 +45,7 @@ re_russian_word = re.compile(r'\b[а-яА-ЯёЁ]+\b')
 
 def hash_original_text(nlp: NlpDocContext) -> Optional[int]:
     nlp.xxhash64 = xxhash.xxh64(nlp.text_input.encode('utf-8')).intdigest()
+    nlp.xxhash64 = nlp.xxhash64 & (2 ** 63 - 1)  # keep only lower 63 bits (!!!)
     return nlp.xxhash64 if nlp.xxhash64 else None
 
 
@@ -69,7 +70,7 @@ def tokenize(nlp: NlpDocContext, text: str = "") -> Optional[list]:
     return tokens_lemmatized if tokens_lemmatized else None
 
 
-def compute_count_tf(nlp: NlpDocContext) -> Optional[tuple[dict[str, int],dict[str, float]]]:
+def compute_count_tf(nlp: NlpDocContext) -> Optional[tuple[dict[str, int], dict[str, float]]]:
     """ Compute TF (Term Frequency) for a single document represented as tokens list. """
 
     assert nlp.tokens_lemmatized, "'nlp.tokens_lemmatized' list should not be empty"
