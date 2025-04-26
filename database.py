@@ -63,7 +63,7 @@ class Corpus:
                 res = session.execute(insert(documents)
                                       .values(xxhash64=nlp.xxhash64,
                                               compressed_text=nlp.compressed_text)
-                                      .returning(documents.c.doc_id))
+                                      .returning(documents.c.doc_id)) 
                 doc_id = res.scalar_one() # Get primary key of last added entry (first autoincremented doc_id)
 
                 # 2) Upsert lemmas to `lemmas`
@@ -96,3 +96,10 @@ class Corpus:
             with session.begin():
                 session.execute(delete(documents).where(documents.c.doc_id == doc_id))
 
+    def get_hashmap(self) -> dict[int, int]:
+        """
+        Returns {xxhash64: doc_id, ...} for all documents in database, else empty dict.
+        """
+        with self.Session() as session:
+            rows = session.execute(select(documents.c.doc_id, documents.c.xxhash64)).all()
+            return {row.xxhash64: row.doc_id for row in rows} if rows else {}
