@@ -1,0 +1,26 @@
+@startuml
+entity documents {
+  * doc_id : Integer <<Primary Key>>
+  --
+  xxhash64 : BigInteger <<indexed>>
+  compressed_text : LargeBinary
+}
+
+entity lemmas {
+  * lemma_id : Integer <<Primary Key>>
+  --
+  lemma : String <<Corpus unique>>
+}
+
+entity documents_lemmas {
+  * doc_id : Integer <<Primary Key, Foreing Key>>
+  * lemma_id : Integer <<Primary Key, Foreing Key>>
+  --
+  lemma_count : Integer
+  lemma_tf: Float <color:gray>(UNSIGNED)
+}
+
+
+documents ||..o{ documents_lemmas : "1:N"
+lemmas ||..o{ documents_lemmas : "1:N"
+@enduml

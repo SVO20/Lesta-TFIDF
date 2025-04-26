@@ -13,11 +13,11 @@ from config import STOP_WORDS_PATH
 @dataclass
 class NlpDocContext:
     text_input: str
-    xxhash64_text: Optional[int] = None
+    xxhash64: Optional[int] = None
     compressed_text: Optional[bytes] = None
     tokens_lemmatized: Optional[list] = None
-    token_count_map: Optional[dict[str, int]] = None
-    token_tf_map: Optional[dict[str, float]] = None
+    lemmas_count_map: Optional[dict[str, int]] = None
+    lemmas_tf_map: Optional[dict[str, float]] = None
 
     def clear(self) -> None:
         """
@@ -28,6 +28,11 @@ class NlpDocContext:
         for field_name in self.__annotations__:
             object.__setattr__(self, field_name, None)
 
+    def is_full(self):
+        for field_name in self.__annotations__:
+            if getattr(self, field_name) is None:
+                return False
+        return True
 
 # Russian stop-words preloaded from the SpaCy Large model
 with open(STOP_WORDS_PATH, encoding="utf-8") as f:
@@ -63,16 +68,16 @@ def compute_tf(nlp: NlpDocContext) -> Optional[dict[str, float]]:
 
     assert nlp.tokens_lemmatized, "'nlp.tokens_lemmatized' list should not be empty"
 
-    nlp.token_count_map = Counter(nlp.tokens_lemmatized)  # dict {'token1': <token1_count>, ...}
-    total_words = sum(nlp.token_count_map.values())
+    nlp.lemmas_count_map = Counter(nlp.tokens_lemmatized)  # dict {'token1': <token1_count>, ...}
+    total_words = sum(nlp.lemmas_count_map.values())
 
-    nlp.token_tf_map = {word: count / total_words for word, count in nlp.token_count_map.items()}
-    return nlp.token_tf_map if nlp.token_tf_map else None
+    nlp.lemmas_tf_map = {word: count / total_words for word, count in nlp.lemmas_count_map.items()}
+    return nlp.lemmas_tf_map if nlp.lemmas_tf_map else None
 
 
 def hash_original_text(nlp: NlpDocContext) -> Optional[int]:
-    nlp.xxhash64_text = xxhash.xxh64(nlp.text_input.encode('utf-8')).intdigest()
-    return nlp.xxhash64_text if nlp.xxhash64_text else None
+    nlp.xxhash64 = xxhash.xxh64(nlp.text_input.encode('utf-8')).intdigest()
+    return nlp.xxhash64 if nlp.xxhash64 else None
 
 
 def compress_original_text(nlp: NlpDocContext) -> Optional[bytes]:
