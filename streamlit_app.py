@@ -11,7 +11,7 @@ import streamlit as st
 
 from database import setup_database, Corpus
 from logger import info
-from nlp import NlpDocContext, hash_original_text, tokenize, compute_tf, compress_original_text
+from nlp import NlpDocContext, hash_original_text, tokenize, compute_count_tf, compress_original_text
 
 
 if 'db_ready' not in st.session_state:
@@ -53,40 +53,6 @@ if 'uploaded_files_info' not in st.session_state:
     st.session_state.last_uploaded = None        # name of the last file
 
 
-# ======== File Storing =========
-def store_file(uploaded_file):
-    file_contents = uploaded_file.read().decode("utf-8")
-    nlp = NlpDocContext(file_contents)
-    try:
-        # Compute document hash
-        hash_ = hash_original_text(nlp)
-        # Check duplicate in global hash map
-        if nlp.xxhash64 in hashmap:
-            doc_id = hashmap[nlp.xxhash64]
-            info(f"Duplicate document detected, using existing doc_id={doc_id}")
-            return doc_id, hash_
-
-        # New document: add to database and update hash map
-        tokenize(nlp)
-        compute_tf(nlp)
-        compress_original_text(nlp)
-        doc_id = corpus.add_document(nlp)
-        # Add to the hashmap explicitly from here
-        hashmap[nlp.xxhash64] = doc_id
-        info(f"Document added with doc_id={doc_id}, hash={nlp.xxhash64}")
-    except Exception as e:
-        st.error(f"Ошибка при работе с базой данных: {e}")
-        raise e
-
-    finally:
-        nlp.clear()
-
-    if doc_id is None:
-        raise RuntimeError("doc_id recieved from database invalid!")
-    else:
-        return doc_id, hash_
-
-
 # === This round ===
 
 # Create a unique key for this run round of the uploader
@@ -104,76 +70,69 @@ with st.form(key="upload_form"):
     submit = st.form_submit_button("Submit")
 
 # Pass on
+
 if submit and files:
+    # Load files
+    documents_loaded = []
     last_filename = ""
+    last_doc_id = None
     for f in files:
+        file_contents = f.read().decode("utf-8")
+        if not file_contents:
+            continue
 
+        # --- Document prepare section ---
 
-        doc_id, hash_ = store_file(f)
+        doc_cxt = NlpDocContext(file_contents)
+        try:
 
-        # Add to the existing list (do not overwrite)
-        st.session_state.uploaded_files_info.append({"filename": f.name, "doc_id": doc_id, "hash": hash_})
+            xxhash64 = hash_original_text(doc_cxt)
+            if xxhash64 in hashmap:
+                doc_id = hashmap[xxhash64]
+                st.info(f"File {f.name} has same content as existing document doc_id={doc_id}.")
+                documents_loaded.append(doc_id)
+                continue
+
+            tokens = tokenize(doc_cxt)
+            if not tokens:
+                st.warning(f"File {f.name} has no valid tokens. To drop.")
+                continue
+
+            lemmas_count_map, lemmas_tf_map = compute_count_tf(doc_cxt)
+            if lemmas_count_map is None or lemmas_tf_map is None:
+                st.error(f"File {f.name} gives incorrect results during analysis. To drop.")
+                continue
+
+            compress_original_text(doc_cxt)
+
+            # Ready for database -> to database
+            doc_id = corpus.add_document(doc_cxt)
+
+            # Update the hashmap explicitly from here
+            hashmap[xxhash64] = doc_id
+            info(f"File {f.name} prepared and added to database with doc_id={doc_id}")
+        except Exception:
+            raise
+        finally:
+            doc_cxt.clear()
+
         last_filename = f.name
+        last_doc_id = doc_id
 
-    st.session_state.last_uploaded = last_filename
+        # ---------------------------------
 
-    # Prepare for a bnew uploader next time
+    if last_doc_id is None:
+        st.error('last_doc_id in None !!?')
+        st.stop()
+    else:
+        st.session_state.last_uploaded = (last_filename, last_doc_id)
+
+    # Prepare for a new uploader next time
     st.session_state.uploader_round += 1
-
     # Force Streamlit to rerun, so the uploader clears itself
     st.rerun()
 
 # ================= Display section ======================================================
-if st.session_state.uploaded_files_info:
-    st.info(f"Последний загруженный файл был: **{st.session_state.last_uploaded}**")
-    df = pd.DataFrame(st.session_state.uploaded_files_info)
-    df.index += 1                       # make index 1-based
-    df.columns = ["Filename", "doc_id", "Hash"]  # nicer column names
-    st.table(df)
-
-
-# -----------------------------------------------------------------------------------------------
-def some(uploaded_file):
-    file_contents = uploaded_file.read().decode("utf-8")
-    nlp = NlpDocContext(file_contents)
-    try:
-        # Compute document hash
-        hash_original_text(nlp)
-        # Check duplicate in global hash map
-        if nlp.xxhash64 in hashmap:
-            doc_id = hashmap[nlp.xxhash64]
-            info(f"Duplicate document detected, using existing doc_id={doc_id}")
-            info("Drop test!")
-        else:
-            # New document: add to database and update hash map
-            tokenize(nlp)
-            compute_tf(nlp)
-            compress_original_text(nlp)
-            doc_id = corpus.add_document(nlp)
-            # Add to the hashmap
-            hashmap[nlp.xxhash64] = doc_id
-            info(f"Document added with doc_id={doc_id}, hash={nlp.xxhash64}")
-
-        # Convert the count dict to DataFrame
-        df = pd.DataFrame(nlp.lemmas_tf_map.items(), columns=['word', 'tf'])
-        df_sorted = df.sort_values(by="tf", ascending=False).head(50).reset_index(drop=True)
-
-        df_sorted.index = df_sorted.index + 1  # make index 1-based for display
-        st.subheader("Terms Frequency for the given text (Russian only)")
-        st.dataframe(df_sorted)
-
-        st.subheader("Документ загружен")
-        st.code(f"Hash: {nlp.xxhash64}", language="text")
-        st.text_area("Первые 100 символов текста:", value=file_contents[:100], height=150)
-
-        st.subheader("Info:")
-        st.info(f"Размер оригинального файла: {humanize.naturalsize(uploaded_file.size)}\n\n"
-                f"Хранение текста в базе данных будет стоить: {humanize.naturalsize(len(nlp.compressed_text))}")
-
-    except Exception as e:
-        st.error(f"Ошибка при работе с NLP/БД: {e}")
-    finally:
-        nlp.clear()
-        # clear
-        st.session_state["uploader"] = None
-        st.rerun()
+if st.session_state.last_uploaded:
+    st.info(f"Последний загруженный файл был: **{st.session_state.last_uploaded}**\n\n"
+            f"Будет произведен анализ именно его содержания.")

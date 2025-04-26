@@ -34,12 +34,18 @@ class NlpDocContext:
                 return False
         return True
 
+
 # Russian stop-words preloaded from the SpaCy Large model
 with open(STOP_WORDS_PATH, encoding="utf-8") as f:
     stop_words_set = set(line.strip() for line in f if line.strip())
 
 mystem = Mystem()
 re_russian_word = re.compile(r'\b[а-яА-ЯёЁ]+\b')
+
+
+def hash_original_text(nlp: NlpDocContext) -> Optional[int]:
+    nlp.xxhash64 = xxhash.xxh64(nlp.text_input.encode('utf-8')).intdigest()
+    return nlp.xxhash64 if nlp.xxhash64 else None
 
 
 def tokenize(nlp: NlpDocContext, text: str = "") -> Optional[list]:
@@ -63,7 +69,7 @@ def tokenize(nlp: NlpDocContext, text: str = "") -> Optional[list]:
     return tokens_lemmatized if tokens_lemmatized else None
 
 
-def compute_tf(nlp: NlpDocContext) -> Optional[dict[str, float]]:
+def compute_count_tf(nlp: NlpDocContext) -> Optional[tuple[dict[str, int],dict[str, float]]]:
     """ Compute TF (Term Frequency) for a single document represented as tokens list. """
 
     assert nlp.tokens_lemmatized, "'nlp.tokens_lemmatized' list should not be empty"
@@ -72,12 +78,7 @@ def compute_tf(nlp: NlpDocContext) -> Optional[dict[str, float]]:
     total_words = sum(nlp.lemmas_count_map.values())
 
     nlp.lemmas_tf_map = {word: count / total_words for word, count in nlp.lemmas_count_map.items()}
-    return nlp.lemmas_tf_map if nlp.lemmas_tf_map else None
-
-
-def hash_original_text(nlp: NlpDocContext) -> Optional[int]:
-    nlp.xxhash64 = xxhash.xxh64(nlp.text_input.encode('utf-8')).intdigest()
-    return nlp.xxhash64 if nlp.xxhash64 else None
+    return nlp.lemmas_count_map if nlp.lemmas_count_map else None, nlp.lemmas_tf_map if nlp.lemmas_tf_map else None
 
 
 def compress_original_text(nlp: NlpDocContext) -> Optional[bytes]:
