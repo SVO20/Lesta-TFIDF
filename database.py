@@ -63,7 +63,7 @@ class Corpus:
                 res = session.execute(insert(documents)
                                       .values(xxhash64=nlp.xxhash64,
                                               compressed_text=nlp.compressed_text)
-                                      .returning(documents.c.doc_id)) 
+                                      .returning(documents.c.doc_id))
                 doc_id = res.scalar_one() # Get primary key of last added entry (first autoincremented doc_id)
 
                 # 2) Upsert lemmas to `lemmas`
