@@ -1,7 +1,8 @@
+import math
 import os
 
 from sqlalchemy import create_engine, MetaData, Table, Column, Integer, BigInteger, LargeBinary, String, ForeignKey, Engine, \
-    Float, insert, select, delete
+    Float, insert, select, delete, func
 from sqlalchemy.orm import sessionmaker
 
 from config import DB_DIR, DB_PATH, DB_URL
@@ -103,3 +104,64 @@ class Corpus:
         with self.Session() as session:
             rows = session.execute(select(documents.c.doc_id, documents.c.xxhash64)).all()
             return {row.xxhash64: row.doc_id for row in rows} if rows else {}
+
+    def lemmas_id_idf_map(self):
+        with (self.Session() as session):
+            with session.begin():
+                # Group by `lemma_id` -> arrgegate by count uinique `doc_id`s
+                query = select(
+                    documents_lemmas.c.lemma_id,
+                    # arrgegate by count `doc_id`s
+                    func.count(func.distinct(documents_lemmas.c.doc_id)).label('doc_count')
+                ).group_by(documents_lemmas.c.lemma_id)
+
+                rows = session.execute(query).all()
+                return {row.lemma_id: row.doc_count for row in rows}
+
+    def lemmas_count(self, doc_id: int):
+        with self.Session() as session:
+            with session.begin():
+                query = select(
+                    documents_lemmas.c.lemma_id,
+                    documents_lemmas.c.lemma_count
+                ).where(documents_lemmas.c.doc_id == doc_id)
+
+                rows = session.execute(query).all()
+                return {row.lemma_id: row.lemma_count for row in rows}
+
+    def lemmas_tf(self, doc_id: int):
+        with self.Session() as session:
+            with session.begin():
+                query = select(
+                    documents_lemmas.c.lemma_id,
+                    documents_lemmas.c.lemma_tf
+                ).where(documents_lemmas.c.doc_id == doc_id)
+
+                rows = session.execute(query).all()
+                return {row.lemma_id: row.lemma_tf for row in rows}
+
+    def lemma_tfidf_map(self, doc_id: int):
+        """ Calculate TF-IDF for each lemma in the document """
+        with self.Session() as session:
+            with session.begin():
+                query = select(func.count()).select_from(documents)
+                total_docs = session.execute(query).scalar_one()
+                if total_docs == 0:
+                    return {}
+
+                tf_map = self.lemmas_tf(doc_id)
+                if not tf_map:
+                    return {}
+
+                lemid_idf_map = self.lemmas_id_idf_map()
+
+                tf_idf_result = {}
+                for lemma_id, tf in tf_map.items():
+                    idf = lemid_idf_map.get(lemma_id)
+                    if idf is None or idf == 0:
+                        continue
+    
+                    idf = math.log(total_docs / idf)
+                    tf_idf_result[lemma_id] = tf * idf
+
+                return tf_idf_result
