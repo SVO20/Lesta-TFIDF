@@ -4,4 +4,3 @@ pymystem3==0.2.0
 pandas==2.2.3
 SQLAlchemy==2.0.40
 xxhash==3.5.0
-humanize==4.12.2
