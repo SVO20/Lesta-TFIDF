@@ -1,28 +1,45 @@
+"""
+SQLite-backed documents-corpus for the Streamlit TF-IDF demo.
+
+- Three tables only: documents, lemmas, bridge table.
+- SQLAlchemy Core, not ORM: clearer SQL.
+- Compressed blobs – original text gzipped (lzma) to save space.
+- Hash-index – xxhash64 keeps duplicates out faster.
+
+"""
+
 import math
 import os
+from typing import Dict, List
 
-from sqlalchemy import create_engine, MetaData, Table, Column, Integer, BigInteger, LargeBinary, String, ForeignKey, Engine, \
-    Float, insert, select, delete, func
+from sqlalchemy import (create_engine, MetaData, Table, Column, Integer, BigInteger,
+                        LargeBinary, String, ForeignKey, Engine, Float, insert, select, delete, func)
 from sqlalchemy.orm import sessionmaker
 
 from config import DB_DIR, DB_PATH, DB_URL
 from nlp import NlpDocContext
 
 
+# --------------------------------------------------------------------------------------
+# 0. Engine setup ----------------------------------------------------------------------
+# --------------------------------------------------------------------------------------
 def setup_database(use_existing: bool = True) -> Engine:
-    # Check if the directory exists
+    """Create (or reuse) the SQLite file and hand back a SQLAlchemy *Engine*."""
     if not os.path.exists(DB_DIR):
         os.makedirs(DB_DIR)
-    # Handle database file
+
     if not use_existing and os.path.exists(DB_PATH):
-        os.remove(DB_PATH)
+        os.remove(DB_PATH)  # drop + recreate DB
+
     # Create the SQLAlchemy engine
     engine = create_engine(DB_URL, echo=False, future=True)
     return engine
 
 
-# =====================================================
-# Create table obejcts, compose metadata
+# --------------------------------------------------------------------------------------
+# 1. Schema (metadata is global singleton on import) -----------------------------------
+# --------------------------------------------------------------------------------------
+
 metadata = MetaData()
 
 documents = Table("documents", metadata,
@@ -41,23 +58,22 @@ documents_lemmas = Table("documents_lemmas", metadata,
                          Column("lemma_tf", Float, nullable=False))  # Float is equivalent to FLOAT UNSIGNED, both 4 bytes
 
 
-# =====================================================
-
+# --------------------------------------------------------------------------------------
+# 2. Public interface ------------------------------------------------------------------
+# --------------------------------------------------------------------------------------
 class Corpus:
-    """
-    Interface for the SQLite-powered text corpus using SQLAlchemy Core as DSL.
-
-    """
+    """Interface for the SQLite-powered text corpus using SQLAlchemy Core as DSL."""
 
     def __init__(self, engine: Engine):
         self.engine = engine
-        self.Session = sessionmaker(bind=self.engine, future=True)  # Session factory
-        # Create tables from metadata
-        metadata.create_all(self.engine)
+        self.Session = sessionmaker(bind=self.engine, future=True)
+        metadata.create_all(self.engine)  # idempotent – safe on every import
 
+    # ---------------------------------------------------------------- add / delete ---
     def add_document(self, nlp: NlpDocContext) -> int:
-        if not nlp.is_full():
-            raise ValueError("All fields in NlpDocContext must be filled with data before in being added to database.")
+        """Puts a fully-parsed document into the three tables."""
+        if not nlp.is_full():  # quick check
+            raise ValueError("NlpDocContext must be filled before DB insertion.")
 
         with self.Session() as session:
             with session.begin():
@@ -68,7 +84,7 @@ class Corpus:
                                       .returning(documents.c.doc_id))
                 doc_id = res.scalar_one()  # Get primary key of last added entry (first autoincremented doc_id)
 
-                # 2) Upsert lemmas to `lemmas`
+                # 2) Upsert lemmas to `lemmas` (SQLite specific OR IGNORE)
                 unique_lemmas = set(nlp.lemmas_count_map.keys())
                 for lemma in unique_lemmas:
                     session.execute(insert(lemmas).prefix_with("OR IGNORE").values(lemma=lemma))
@@ -93,23 +109,24 @@ class Corpus:
         """
         Delete a document from the database. Associated lemmas and associations will be deleted automatically
         due to the 'CASCADE' delete rule on the foreign key constraints.
+
         """
         with self.Session() as session:
             with session.begin():
                 session.execute(delete(documents).where(documents.c.doc_id == doc_id))
 
-    def get_hashmap(self) -> dict[int, int]:
-        """
-        Returns {xxhash64: doc_id, ...} for all documents in database, else empty dict.
-        """
+    # ---------------------------------------------------------------- lookup -----------
+    def get_hashmap(self) -> Dict[int, int]:
+        """Returns `{xxhash64: doc_id, ...}` snapshot – used for duplicate detection."""
         with self.Session() as session:
             rows = session.execute(select(documents.c.doc_id, documents.c.xxhash64)).all()
             return {row.xxhash64: row.doc_id for row in rows} if rows else {}
 
     def lemmas_id_doccount_map(self):
+        """For IDF: how many docs contain each lemma."""
         with (self.Session() as session):
             with session.begin():
-                # Group by `lemma_id` -> arrgegate by count uinique `doc_id`s
+                # Group by `lemma_id` -> arrgegate by count unique `doc_id`s
                 query = select(
                     documents_lemmas.c.lemma_id,
                     # arrgegate by count `doc_id`s
@@ -119,7 +136,8 @@ class Corpus:
                 rows = session.execute(query).all()
                 return {row.lemma_id: row.doc_count for row in rows}
 
-    def lemmas_count(self, doc_id: int):
+    def lemmas_count(self, doc_id: int) -> Dict[int, int]:
+        """Lemmas' counts for a given doc."""
         with self.Session() as session:
             with session.begin():
                 query = select(
@@ -130,47 +148,48 @@ class Corpus:
                 rows = session.execute(query).all()
                 return {row.lemma_id: row.lemma_count for row in rows}
 
-    def lemmas_tf(self, doc_id: int):
-        with self.Session() as session:
+    def lemmas_tf(self, doc_id: int) -> Dict[int, float]:
+        """Pre-computed term frequency map."""
+        with (self.Session() as session):
             with session.begin():
-                query = select(
-                    documents_lemmas.c.lemma_id,
-                    documents_lemmas.c.lemma_tf
-                ).where(documents_lemmas.c.doc_id == doc_id)
+                query = select(documents_lemmas.c.lemma_id, documents_lemmas.c.lemma_tf
+                               ).where(documents_lemmas.c.doc_id == doc_id)
 
                 rows = session.execute(query).all()
                 return {row.lemma_id: row.lemma_tf for row in rows}
 
-    def lemma_tfidf_map(self, doc_id: int):
-        """ Calculate TF-IDF for each lemma in the document """
+    # ---------------------------------------------------------------- TF-IDF -----------
+    def lemma_tfidf_map(self, doc_id: int) -> Dict[int, float]:
+        """TF-IDF per lemma for doc_id."""
         with self.Session() as session:
             with session.begin():
                 query = select(func.count()).select_from(documents)
                 total_docs = session.execute(query).scalar_one()
-                if total_docs == 0:
+                if total_docs == 0:  # empty corpus – nothing to do
                     return {}
 
                 tf_map = self.lemmas_tf(doc_id)
                 if not tf_map:
-                    return {}
+                    raise RuntimeError(f"document {doc_id=} has no lemmas (should never happen ??!)")
 
                 lemid_doccount_map = self.lemmas_id_doccount_map()
 
-                tf_idf_result = {}
+                tf_idf_result: Dict[int, float] = {}
                 for lemma_id, tf in tf_map.items():
-                    doccount = lemid_doccount_map.get(lemma_id)
-                    if doccount is None or doccount == 0:
-                        continue
+                    doccount = lemid_doccount_map.get(lemma_id) or 0
+                    if doccount == 0:
+                        continue  # ownerless lemma encoutered - infinite IDF case skipped
 
                     idf = math.log(total_docs / doccount)
                     tf_idf_result[lemma_id] = tf * idf
 
                 return tf_idf_result
 
-    def document_lemmas_info(self, doc_id: int) -> list[dict]:
-        """
-        Return list of lemmas for the document, each as:
-        {'lemma': str, 'count': int, 'tf': float, 'idf': float, 'tf-idf': float}
+    # ---------------------------------------------------------------- output ----------
+    def document_lemmas_info(self, doc_id: int) -> List[dict]:
+        """Compose a list of lemma stats, ready for convert to DataFrame.
+
+        lemma_stat = {'lemma': str, 'count': int, 'tf': float, 'idf': float, 'tf-idf': float}
         Sorted descending by 'tf-idf'.
         """
         with self.Session() as session:
@@ -192,14 +211,15 @@ class Corpus:
                                        .where(lemmas.c.lemma_id.in_(lemma_ids))).fetchall()
                 id_to_lemma = {row.lemma_id: row.lemma for row in rows}
 
-                # Compose full list
-                data = []
+                # Compose list of stats
+                data: List[dict] = []
                 for lemma_id in lemma_ids:
+                    # Assemble one dict per lemma
                     lemma = id_to_lemma.get(lemma_id, f"[id={lemma_id}]")
                     count = count_map.get(lemma_id, 0)
                     tf = tf_map.get(lemma_id, 0.0)
                     docs_count = lemid_doccount_map.get(lemma_id, 1)
-                    idf = math.log(total_docs / docs_count) if docs_count else 0.0  # idf of lemma in Corpus
+                    idf = math.log(total_docs / docs_count) if docs_count else 0.0  # idf of lemma iside Corpus
                     tfidf = tfidf_map.get(lemma_id, 0.0)
 
                     data.append({"word": lemma,
@@ -208,5 +228,5 @@ class Corpus:
                                  "idf": idf,
                                  "tf-idf": tfidf})
 
-                # Sort by tf-idf descending
+                # Pre-sort by tf-idf descending
                 return sorted(data, key=lambda x: x["tf-idf"], reverse=True)
